@@ -1,0 +1,21 @@
+Wiring notes for DRV8871
+
+Each pump uses two GPIOs: IN1, IN2 (set in main.cpp arrays).
+
+Forward: PWM on IN1, IN2 = 0 (internally handled by setDrive_).
+
+Reverse (purge): PWM on IN2, IN1 = 0.
+
+Coast stop: both 0. Brake: both PWM (rarely needed here).
+
+What changed vs previous version
+
+Pump driver supports true forward/reverse with DRV8871.
+
+Two LEDC channels per pump, so PWM works in both directions.
+
+Web UI moved to LittleFS (/data/index.html), served statically; APIs unchanged.
+
+Everything else (logger, JSON/CSV, settings in NVS, OLED, scheduler) stays integrated.
+
+If you want me to add mDNS (http://doser.local) or OTA, I can slot those in neatly next.

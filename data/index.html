@@ -1,0 +1,107 @@
+<!doctype html>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Doser</title>
+<style>
+  body{font-family:system-ui,Segoe UI,Arial;margin:16px;max-width:900px}
+  .card{border:1px solid #ddd;border-radius:12px;padding:12px;margin:12px 0}
+  h2{margin:4px 0 8px}
+  table{border-collapse:collapse;width:100%}
+  td,th{border:1px solid #ddd;padding:6px;text-align:left}
+  button{padding:6px 10px;border-radius:8px;border:1px solid #ccc;background:#f7f7f7;cursor:pointer}
+  input[type=number]{width:7em}
+  .row{display:flex;gap:12px;flex-wrap:wrap}
+  pre{white-space:pre-wrap}
+</style>
+
+<div class="card"><h2>Status</h2><pre id="st">loading…</pre></div>
+
+<div class="card">
+  <h2>Controls</h2>
+  <div id="pumps"></div>
+</div>
+
+<div class="card">
+  <h2>Settings</h2>
+  <div id="sets"></div>
+  <div class="row" style="margin-top:8px">
+    <button onclick="save()">Save</button>
+    <span id="saveMsg"></span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Logs</h2>
+  <div class="row">
+    <button onclick="reloadLogs()">Refresh</button>
+    <a href="/logs.csv"><button>Download CSV</button></a>
+  </div>
+  <pre id="logs" style="max-height:300px;overflow:auto"></pre>
+</div>
+
+<script>
+async function getStatus(){ return fetch('/api/status').then(r=>r.json()); }
+async function render(){
+  const s = await getStatus();
+  document.getElementById('st').textContent = JSON.stringify(s,null,2);
+
+  const div = document.getElementById('pumps'); div.innerHTML='';
+  s.pumps.forEach(p=>{
+    const e = document.createElement('div'); e.className='card';
+    e.innerHTML = `<b>Pump ${p.idx}</b> — ${p.running?'RUNNING':'IDLE'} — next: ${p.next_run_in_s>=0?p.next_run_in_s+'s':'(disabled)'}
+      <div class="row" style="margin-top:6px">
+        <label>Sec <input type="number" id="sec${p.idx}" min="1" value="3"></label>
+        <button onclick="prime(${p.idx})">Prime</button>
+        <button onclick="purge(${p.idx})">Purge</button>
+        <button onclick="stop(${p.idx})">Stop</button>
+      </div>`;
+    div.appendChild(e);
+  });
+
+  const sets = document.getElementById('sets'); sets.innerHTML='';
+  let t = document.createElement('table');
+  t.innerHTML = `<tr><th>Pump</th><th>mL/s</th><th>Duty (0-255)</th><th>Offset (s)</th></tr>`;
+  s.pumps.forEach(p=>{
+    let tr = document.createElement('tr');
+    tr.innerHTML = `<td>${p.idx}</td>
+      <td><input id="mls${p.idx}" type="number" step="0.01" value="${p.ml_per_sec}"></td>
+      <td><input id="duty${p.idx}" type="number" min="0" max="255" value="${p.duty}"></td>
+      <td><input id="ofs${p.idx}" type="number" min="0" value="0"></td>`;
+    t.appendChild(tr);
+  });
+  let tr2 = document.createElement('tr');
+  tr2.innerHTML = `<td><b>Schedule</b></td><td colspan="3">
+    Interval (s): <input id="ival" type="number" min="0" value="${(s.schedule_interval_s??0)}"> (0=off)
+  </td>`;
+  t.appendChild(tr2);
+  sets.appendChild(t);
+}
+
+async function prime(i){ let sec = +document.getElementById('sec'+i).value||1; await fetch(`/api/prime?pump=${i}&sec=${sec}`); render(); }
+async function purge(i){ let sec = +document.getElementById('sec'+i).value||1; await fetch(`/api/purge?pump=${i}&sec=${sec}`); render(); }
+async function stop(i){ await fetch(`/api/stop?pump=${i}`); render(); }
+
+async function save(){
+  const s = await getStatus();
+  let body = { schedule_interval_s: +(document.getElementById('ival').value||0), pumps: [] };
+  s.pumps.forEach(p=>{
+    body.pumps.push({
+      idx: p.idx,
+      ml_per_sec: +document.getElementById('mls'+p.idx).value,
+      duty: +document.getElementById('duty'+p.idx).value,
+      offset_s: +(document.getElementById('ofs'+p.idx).value||0)
+    });
+  });
+  let r = await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  document.getElementById('saveMsg').textContent = r.ok?'Saved.':'Error';
+  setTimeout(()=>document.getElementById('saveMsg').textContent='', 2000);
+  render();
+}
+
+async function reloadLogs(){
+  let j = await fetch('/logs.json').then(r=>r.json());
+  document.getElementById('logs').textContent = JSON.stringify(j,null,2);
+}
+
+render(); reloadLogs();
+setInterval(render, 2000);
+</script>
