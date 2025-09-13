@@ -25,6 +25,8 @@ static String statusJson() {
     o["delivered_ml"] = s.deliveredML;
     o["ml_per_sec"] = settings.pump[i].mlPerSec;
     o["duty"] = settings.pump[i].duty;
+    o["offset_s"] = settings.scheduleOffsetSec[i];;  // expose configured offset
+    
     uint32_t due = scheduler.nextRunMs(i);
     o["next_run_in_s"] = (due == UINT32_MAX) ? -1
                          : (int)((due > millis()) ? (due - millis()) / 1000 : 0);
