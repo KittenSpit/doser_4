@@ -8,14 +8,16 @@
 
 AsyncWebServer server(80);
 
+// Build status JSON (ArduinoJson v7 API)
 static String statusJson() {
-  DynamicJsonDocument doc(1024 + NUM_PUMPS*128);
+  JsonDocument doc;
   doc["uptime_ms"] = millis();
   doc["schedule_interval_s"] = settings.scheduleIntervalSec;
-  auto& arr = doc.createNestedArray("pumps");
-  for (int i=0;i<NUM_PUMPS;i++){
+
+  JsonArray arr = doc["pumps"].to<JsonArray>();
+  for (int i = 0; i < NUM_PUMPS; i++) {
     const auto& s = pumpCtl.state(i);
-    JsonObject o = arr.createNestedObject();
+    JsonObject o = arr.add<JsonObject>();
     o["idx"] = i;
     o["running"] = s.running;
     o["start_ms"] = s.startMs;
@@ -24,28 +26,31 @@ static String statusJson() {
     o["ml_per_sec"] = settings.pump[i].mlPerSec;
     o["duty"] = settings.pump[i].duty;
     uint32_t due = scheduler.nextRunMs(i);
-    o["next_run_in_s"] = (due==UINT32_MAX) ? -1 : (int)((due>millis())? (due-millis())/1000 : 0);
+    o["next_run_in_s"] = (due == UINT32_MAX) ? -1
+                         : (int)((due > millis()) ? (due - millis()) / 1000 : 0);
   }
-  String out; serializeJson(doc, out); return out;
+
+  String out; serializeJson(doc, out);
+  return out;
 }
 
 void web_begin() {
-  if (!LittleFS.begin(true)) {
-    logger.add("fs","LittleFS mount failed");
-  } else {
-    logger.add("fs","LittleFS mounted");
-  }
+  if (!LittleFS.begin(true)) logger.add("fs", "LittleFS mount failed");
+  else                       logger.add("fs", "LittleFS mounted");
 
-  // Serve static UI from LittleFS
-  server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+  // CORS (optional but helps with tools)
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Origin", "*");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
+  DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
 
-  // API: status
-  server.on("/api/status", HTTP_GET, [](AsyncWebServerRequest* req){
+  // -------- API ROUTES FIRST (accept ANY method & trailing slashes) --------
+  auto sendStatus = [](AsyncWebServerRequest* req){
     req->send(200, "application/json", statusJson());
-  });
+  };
+  server.on("/api/status",  HTTP_ANY, sendStatus);
+  server.on("/api/status/", HTTP_ANY, sendStatus);
 
-  // API: actions
-  server.on("/api/prime", HTTP_GET, [](AsyncWebServerRequest* r){
+  server.on("/api/prime", HTTP_ANY, [](AsyncWebServerRequest* r){
     if (!r->hasParam("pump") || !r->hasParam("sec")) { r->send(400,"text/plain","missing pump/sec"); return; }
     int idx = r->getParam("pump")->value().toInt();
     int sec = r->getParam("sec")->value().toInt();
@@ -53,7 +58,7 @@ void web_begin() {
     r->send(200,"text/plain","ok");
   });
 
-  server.on("/api/purge", HTTP_GET, [](AsyncWebServerRequest* r){
+  server.on("/api/purge", HTTP_ANY, [](AsyncWebServerRequest* r){
     if (!r->hasParam("pump") || !r->hasParam("sec")) { r->send(400,"text/plain","missing pump/sec"); return; }
     int idx = r->getParam("pump")->value().toInt();
     int sec = r->getParam("sec")->value().toInt();
@@ -61,40 +66,39 @@ void web_begin() {
     r->send(200,"text/plain","ok");
   });
 
-  server.on("/api/stop", HTTP_GET, [](AsyncWebServerRequest* r){
+  server.on("/api/stop", HTTP_ANY, [](AsyncWebServerRequest* r){
     if (!r->hasParam("pump")) { r->send(400,"text/plain","missing pump"); return; }
     pumpCtl.stopPump(r->getParam("pump")->value().toInt());
     r->send(200,"text/plain","ok");
   });
 
-  // API: settings
+  // Settings (GET/POST/OPTIONS)
+  server.on("/api/settings", HTTP_OPTIONS, [](AsyncWebServerRequest* r){ r->send(204); });
   server.on("/api/settings", HTTP_GET, [](AsyncWebServerRequest* r){
-    DynamicJsonDocument doc(1024+NUM_PUMPS*128);
+    JsonDocument doc;
     doc["schedule_interval_s"] = settings.scheduleIntervalSec;
-    auto& arr = doc.createNestedArray("pumps");
-    for (int i=0;i<NUM_PUMPS;i++){
-      JsonObject o = arr.createNestedObject();
-      o["idx"]=i; o["ml_per_sec"]=settings.pump[i].mlPerSec; o["duty"]=settings.pump[i].duty; o["offset_s"]=settings.scheduleOffsetSec[i];
+    JsonArray arr = doc["pumps"].to<JsonArray>();
+    for (int i = 0; i < NUM_PUMPS; i++) {
+      JsonObject o = arr.add<JsonObject>();
+      o["idx"] = i;
+      o["ml_per_sec"] = settings.pump[i].mlPerSec;
+      o["duty"] = settings.pump[i].duty;
+      o["offset_s"] = settings.scheduleOffsetSec[i];
     }
-    String out; serializeJson(doc,out);
-    r->send(200,"application/json",out);
+    String out; serializeJson(doc, out);
+    r->send(200, "application/json", out);
   });
-
   server.on("/api/settings", HTTP_POST, [](AsyncWebServerRequest* r){}, NULL,
-    [](AsyncWebServerRequest* r, uint8_t* data, size_t len, size_t, size_t) {
-      DynamicJsonDocument doc(2048+NUM_PUMPS*128);
-      DeserializationError err = deserializeJson(doc, data, len);
-      if (err) { r->send(400,"text/plain","bad json"); return; }
-
-      settings.scheduleIntervalSec = doc["schedule_interval_s"] | settings.scheduleIntervalSec;
-      if (doc.containsKey("pumps")) {
+    [](AsyncWebServerRequest* r, uint8_t* data, size_t len, size_t, size_t){
+      JsonDocument doc;
+      if (deserializeJson(doc, data, len)) { r->send(400,"text/plain","bad json"); return; }
+      if (doc["schedule_interval_s"].is<uint32_t>()) settings.scheduleIntervalSec = doc["schedule_interval_s"].as<uint32_t>();
+      if (doc["pumps"].is<JsonArray>()) {
         for (JsonObject p : doc["pumps"].as<JsonArray>()) {
-          int idx = p["idx"] | -1;
-          if (idx>=0 && idx<NUM_PUMPS) {
-            settings.pump[idx].mlPerSec = p["ml_per_sec"] | settings.pump[idx].mlPerSec;
-            settings.pump[idx].duty     = p["duty"]       | settings.pump[idx].duty;
-            settings.scheduleOffsetSec[idx] = p["offset_s"] | settings.scheduleOffsetSec[idx];
-          }
+          int idx = p["idx"] | -1; if (idx<0 || idx>=NUM_PUMPS) continue;
+          if (p["ml_per_sec"].is<float>())   settings.pump[idx].mlPerSec = p["ml_per_sec"].as<float>();
+          if (p["duty"].is<uint8_t>())       settings.pump[idx].duty     = p["duty"].as<uint8_t>();
+          if (p["offset_s"].is<uint32_t>())  settings.scheduleOffsetSec[idx] = p["offset_s"].as<uint32_t>();
         }
       }
       settings.save();
@@ -103,22 +107,29 @@ void web_begin() {
     });
 
   // Logs
-  server.on("/logs.json", HTTP_GET, [](AsyncWebServerRequest* r){
+  server.on("/logs.json", HTTP_ANY, [](AsyncWebServerRequest* r){
     r->send(200, "application/json", logger.toJson(true));
   });
-  server.on("/logs.csv", HTTP_GET, [](AsyncWebServerRequest* r){
+  server.on("/logs.csv", HTTP_ANY, [](AsyncWebServerRequest* r){
     r->send(200, "text/csv", logger.toCSV());
   });
 
-  // Fallback: if a route under / is missing, serve index.html (SPA)
-  server.onNotFound([](AsyncWebServerRequest *request){
-    if (LittleFS.exists("/index.html")) {
-      request->send(LittleFS, "/index.html", "text/html");
-    } else {
-      request->send(404, "text/plain", "Not found");
+  // Health probe some clients hit
+  server.on("/status", HTTP_ANY, [](AsyncWebServerRequest* req){ req->send(204); });
+
+  // -------- STATIC UI LAST (so it never intercepts /api/*) --------
+  server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+
+  // Keep /api/* off FS fallback
+  server.onNotFound([](AsyncWebServerRequest *req){
+    String u = req->url();
+    if (u.startsWith("/api/") || u.startsWith("/logs")) {
+      req->send(404, "text/plain", "API route not found"); return;
     }
+    if (LittleFS.exists("/index.html")) req->send(LittleFS, "/index.html", "text/html");
+    else req->send(404, "text/plain", "Not found");
   });
 
   server.begin();
-  logger.add("web","server ready");
+  logger.add("web", "server ready");
 }
